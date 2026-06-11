@@ -66,4 +66,8 @@ final class CommandDoubleTapDetectorTests: XCTestCase {
         detector.commandKeyDown(at: 1.2)
         XCTAssertFalse(detector.commandKeyUp(at: 1.28))
     }
+
+    func testCommandModifiedKeyDownShouldInterruptTapDetection() {
+        XCTAssertTrue(CommandDoubleTapInterruption.shouldInterruptKeyDown(cgFlags: [.maskCommand]))
+    }
 }

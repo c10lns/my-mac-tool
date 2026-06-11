@@ -65,6 +65,12 @@ struct CommandDoubleTapDetector {
     }
 }
 
+enum CommandDoubleTapInterruption {
+    static func shouldInterruptKeyDown(cgFlags: CGEventFlags) -> Bool {
+        cgFlags.contains(.maskCommand)
+    }
+}
+
 final class CommandDoubleTapMonitor {
     private let interval: TimeInterval
     private let maximumTapDuration: TimeInterval
@@ -72,6 +78,8 @@ final class CommandDoubleTapMonitor {
     private let onDoubleTap: () -> Void
     private var globalMonitors: [Any] = []
     private var localMonitors: [Any] = []
+    private var keyEventTap: CFMachPort?
+    private var keyEventTapRunLoopSource: CFRunLoopSource?
     private var detector: CommandDoubleTapDetector
     private var commandWasDown = false
 
@@ -123,6 +131,8 @@ final class CommandDoubleTapMonitor {
         }) {
             localMonitors.append(localInterruptMonitor)
         }
+
+        startKeyEventTap()
     }
 
     func stop() {
@@ -136,6 +146,18 @@ final class CommandDoubleTapMonitor {
 
         globalMonitors = []
         localMonitors = []
+
+        if let keyEventTapRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), keyEventTapRunLoopSource, .commonModes)
+        }
+
+        if let keyEventTap {
+            CGEvent.tapEnable(tap: keyEventTap, enable: false)
+            CFMachPortInvalidate(keyEventTap)
+        }
+
+        keyEventTapRunLoopSource = nil
+        keyEventTap = nil
     }
 
     deinit {
@@ -161,5 +183,44 @@ final class CommandDoubleTapMonitor {
 
     private func interruptCommandSequence() {
         detector.interrupt()
+    }
+
+    private func startKeyEventTap() {
+        let eventsOfInterest = CGEventMask(1) << CGEventType.keyDown.rawValue
+        let userInfo = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: eventsOfInterest,
+            callback: CommandDoubleTapMonitor.handleKeyEventTap,
+            userInfo: userInfo
+        ) else {
+            return
+        }
+
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CFMachPortInvalidate(tap)
+            return
+        }
+
+        keyEventTap = tap
+        keyEventTapRunLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private static let handleKeyEventTap: CGEventTapCallBack = { _, type, event, userInfo in
+        guard type == .keyDown, let userInfo else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        let monitor = Unmanaged<CommandDoubleTapMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+        if CommandDoubleTapInterruption.shouldInterruptKeyDown(cgFlags: event.flags) {
+            monitor.interruptCommandSequence()
+        }
+
+        return Unmanaged.passUnretained(event)
     }
 }

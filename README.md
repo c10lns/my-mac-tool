@@ -17,6 +17,14 @@ You can also run it directly:
 swift run CropAndLock
 ```
 
+## Development Rule
+
+After every recompile:
+
+1. Quit the currently running CropAndLock process.
+2. Clear the Screen Recording permission cache.
+3. Automatically run the newly compiled version.
+
 ## Build A Local App
 
 ```bash
