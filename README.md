@@ -11,11 +11,6 @@ CropAndLock is a local macOS menu-bar utility with two tools in one app:
 ./scripts/run.sh
 ```
 
-You can also run it directly:
-
-```bash
-swift run CropAndLock
-```
 
 ## Development Rule
 
