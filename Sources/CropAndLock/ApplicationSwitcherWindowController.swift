@@ -279,7 +279,10 @@ private final class ApplicationSwitcherOverlayView: NSView {
         )
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        radialView.onExitDisk = { [weak self] in
+            self?.dismiss()
+        }
         addSubview(radialView)
     }
 
@@ -375,16 +378,17 @@ private final class RadialMenuView: NSView {
     private var selectionModel: ApplicationSwitcherSelectionModel?
     private var trackingArea: NSTrackingArea?
     private weak var hoveredButton: RadialAppButton?
+    var onExitDisk: (() -> Void)?
     private let centerTitleLabel = NSTextField(labelWithString: "")
     private let colors: [NSColor] = [
-        NSColor(calibratedRed: 0.06, green: 0.48, blue: 0.42, alpha: 0.78),
-        NSColor(calibratedRed: 0.18, green: 0.45, blue: 0.85, alpha: 0.78),
-        NSColor(calibratedRed: 0.82, green: 0.30, blue: 0.44, alpha: 0.78),
-        NSColor(calibratedRed: 0.72, green: 0.47, blue: 0.09, alpha: 0.78),
-        NSColor(calibratedRed: 0.48, green: 0.35, blue: 0.78, alpha: 0.78),
-        NSColor(calibratedRed: 0.16, green: 0.54, blue: 0.33, alpha: 0.78),
-        NSColor(calibratedRed: 0.22, green: 0.43, blue: 0.53, alpha: 0.78),
-        NSColor(calibratedRed: 0.51, green: 0.33, blue: 0.22, alpha: 0.78)
+        NSColor(calibratedRed: 0.62, green: 0.74, blue: 0.86, alpha: 0.94),
+        NSColor(calibratedRed: 0.66, green: 0.80, blue: 0.80, alpha: 0.94),
+        NSColor(calibratedRed: 0.80, green: 0.74, blue: 0.86, alpha: 0.94),
+        NSColor(calibratedRed: 0.86, green: 0.78, blue: 0.70, alpha: 0.94),
+        NSColor(calibratedRed: 0.64, green: 0.80, blue: 0.76, alpha: 0.94),
+        NSColor(calibratedRed: 0.74, green: 0.82, blue: 0.72, alpha: 0.94),
+        NSColor(calibratedRed: 0.66, green: 0.72, blue: 0.84, alpha: 0.94),
+        NSColor(calibratedRed: 0.82, green: 0.74, blue: 0.80, alpha: 0.94)
     ]
 
     init(
@@ -432,15 +436,32 @@ private final class RadialMenuView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        updateHoveredButton(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        guard isInsideDisk(point) else {
+            onExitDisk?()
+            return
+        }
+        updateHoveredButton(at: point)
     }
 
     override func mouseExited(with event: NSEvent) {
         updateHoveredButton(at: nil)
+        onExitDisk?()
     }
 
     override func mouseDown(with event: NSEvent) {
         _ = selectItem(at: convert(event.locationInWindow, from: nil))
+    }
+
+    private var diskRadius: CGFloat {
+        min(bounds.width, bounds.height) / 2 - 8
+    }
+
+    private func isInsideDisk(_ point: NSPoint) -> Bool {
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        return dx * dx + dy * dy <= diskRadius * diskRadius
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -459,25 +480,88 @@ private final class RadialMenuView: NSView {
             path.appendArc(withCenter: center, radius: radius, startAngle: start, endAngle: end, clockwise: true)
             path.close()
 
-            colors[index % colors.count].setFill()
-            path.fill()
+            // Radial gradient per sector: brighter near the hub, base tint at the
+            // rim, so each wedge reads with volume instead of a flat fill.
+            let base = colors[index % colors.count]
+            let inner = base.blended(withFraction: 0.32, of: .white) ?? base
+            let outer = base.blended(withFraction: 0.14, of: .black) ?? base
+            let gradient = NSGradient(colors: [inner, base, outer], atLocations: [0, 0.62, 1], colorSpace: .deviceRGB)
 
-            NSColor.white.withAlphaComponent(0.28).setStroke()
+            NSGraphicsContext.saveGraphicsState()
+            path.addClip()
+            gradient?.draw(fromCenter: center, radius: 0, toCenter: center, radius: radius, options: [])
+            NSGraphicsContext.restoreGraphicsState()
+
+            NSColor.white.withAlphaComponent(0.35).setStroke()
             path.lineWidth = 1
             path.stroke()
         }
 
+        // Soft glossy sheen over the top half of the disk: a vertical white-to-clear
+        // gradient clipped to the disk, so the highlight fades gently instead of
+        // reading as a hard stroked line.
+        let diskClip = NSBezierPath(
+            ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        )
+        let sheen = NSGradient(
+            colors: [
+                NSColor.white.withAlphaComponent(0.28),
+                NSColor.white.withAlphaComponent(0.06),
+                NSColor.white.withAlphaComponent(0.0)
+            ],
+            atLocations: [0, 0.35, 0.62],
+            colorSpace: .deviceRGB
+        )
+        NSGraphicsContext.saveGraphicsState()
+        diskClip.addClip()
+        sheen?.draw(in: NSRect(x: center.x - radius, y: center.y, width: radius * 2, height: radius), angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+
+        // Soft outer ring to seat the disk.
+        let outerRing = NSBezierPath(
+            ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        )
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        outerRing.lineWidth = 1
+        outerRing.stroke()
+
         let centerRadius: CGFloat = 56
-        let centerPath = NSBezierPath(
+
+        // Recessed shadow ring around the hub for depth.
+        let shadowRing = NSBezierPath(
             ovalIn: NSRect(
-                x: center.x - centerRadius,
-                y: center.y - centerRadius,
-                width: centerRadius * 2,
-                height: centerRadius * 2
+                x: center.x - centerRadius - 3,
+                y: center.y - centerRadius - 3,
+                width: (centerRadius + 3) * 2,
+                height: (centerRadius + 3) * 2
             )
         )
-        NSColor.white.withAlphaComponent(0.92).setFill()
-        centerPath.fill()
+        NSColor.black.withAlphaComponent(0.10).setStroke()
+        shadowRing.lineWidth = 3
+        shadowRing.stroke()
+
+        let centerRect = NSRect(
+            x: center.x - centerRadius,
+            y: center.y - centerRadius,
+            width: centerRadius * 2,
+            height: centerRadius * 2
+        )
+        let centerPath = NSBezierPath(ovalIn: centerRect)
+
+        // Subtle vertical gradient on the hub gives it a glossy, raised feel.
+        let hubGradient = NSGradient(
+            colors: [NSColor(calibratedWhite: 1.0, alpha: 1.0), NSColor(calibratedWhite: 0.93, alpha: 1.0)],
+            atLocations: [0, 1],
+            colorSpace: .deviceRGB
+        )
+        NSGraphicsContext.saveGraphicsState()
+        centerPath.addClip()
+        hubGradient?.draw(in: centerRect, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        centerPath.lineWidth = 1
+        centerPath.stroke()
     }
 
     override func layout() {
@@ -522,7 +606,12 @@ private final class RadialMenuView: NSView {
         hoveredButton?.setHoverState(false)
         nextButton?.setHoverState(true)
         hoveredButton = nextButton
-        updateCenterTitle()
+
+        if let nextButton {
+            selectButton(nextButton)
+        } else {
+            updateCenterTitle()
+        }
     }
 
     private func button(at point: NSPoint) -> RadialAppButton? {
@@ -564,7 +653,7 @@ private final class RadialMenuView: NSView {
         centerTitleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         centerTitleLabel.textColor = NSColor(calibratedWhite: 0.12, alpha: 1)
         centerTitleLabel.lineBreakMode = .byTruncatingTail
-        centerTitleLabel.maximumNumberOfLines = 2
+        centerTitleLabel.maximumNumberOfLines = 3
         centerTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(centerTitleLabel, positioned: .above, relativeTo: nil)
     }
@@ -572,9 +661,9 @@ private final class RadialMenuView: NSView {
     private func layoutCenterTitleLabel() {
         centerTitleLabel.frame = NSRect(
             x: bounds.midX - 50,
-            y: bounds.midY - 23,
+            y: bounds.midY - 32,
             width: 100,
-            height: 46
+            height: 64
         )
     }
 
@@ -657,9 +746,10 @@ private final class RadialMenuView: NSView {
     }
 
     private func updateCenterTitle() {
-        centerTitleLabel.stringValue = hoveredButton?.displayName
+        let name = hoveredButton?.displayName
             ?? selectionModel?.selectedDisplayName
             ?? ""
+        centerTitleLabel.stringValue = name.replacingOccurrences(of: " ", with: "\n")
     }
 
     private func bringCenterTitleLabelToFront() {
@@ -855,9 +945,9 @@ private final class RadialAppButton: NSControl {
     private func updateSelectionBackground(animated: Bool) {
         let alpha: CGFloat
         if isSelected {
-            alpha = 0.38
+            alpha = 0.32
         } else if isHovered {
-            alpha = 0.24
+            alpha = 0.20
         } else {
             alpha = 0
         }
