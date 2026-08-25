@@ -669,9 +669,15 @@ private final class RadialMenuView: NSView {
 
     private func layoutAppButtons() {
         let menuSize = min(bounds.width, bounds.height)
-        let baseRadius = menuSize * 0.34
-        let minimumRadius = menuSize * 0.21
-        let maximumRadius = menuSize * 0.44
+        let hubRadius: CGFloat = 56
+        let rimRadius = menuSize / 2 - 8
+        // Center the icon grid on the radial midpoint between the hub and the rim so
+        // it reads as sitting in the visual center of each wedge rather than drifting
+        // toward the outer edge.
+        let annulusCenter = (hubRadius + rimRadius) / 2
+        let baseRadius = annulusCenter
+        let minimumRadius = hubRadius + 24
+        let maximumRadius = rimRadius - 24
         let sectorCount = max(sectors.count, 1)
         let step = 360.0 / CGFloat(sectorCount)
 
