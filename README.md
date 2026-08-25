@@ -38,7 +38,10 @@ open build/CropAndLock.app
 
 ## App Switcher
 
-- Double-tap `Command` to open the radial app switcher.
+- Press `Command+Option` to open the radial app switcher.
+- The previously used running app is selected by default.
+- Use the arrow keys to move the selected app.
+- Press `Return` or `Space` to switch to the selected app.
 - Click an app icon to activate that app and close the switcher.
 - Click outside the radial menu, or press any key, to close it.
 - Use `C&L > Preview App Switcher` to open it from the menu bar.
@@ -46,4 +49,4 @@ open build/CropAndLock.app
 
 In Settings, the left list shows installed applications and supports search. Drag an application into a sector on the right. A configured application can belong to only one sector; dragging it to another sector moves it. The runtime switcher only shows configured applications that are currently running.
 
-macOS may ask for Screen Recording permission the first time the screenshot tool runs, and Accessibility permission for the double-Command global trigger.
+macOS may ask for Screen Recording permission the first time the screenshot tool runs, and Accessibility permission for the Command+Option global trigger.

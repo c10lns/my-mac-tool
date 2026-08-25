@@ -6,6 +6,10 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(AppSettings.defaultHotKeyLabel, "command+control+a")
     }
 
+    func testSwitcherHotKeyLabelIsCommandOption() {
+        XCTAssertEqual(AppSettings.switcherHotKeyLabel, "command+option")
+    }
+
     func testScreenshotFileFactoryCreatesPngInsideConfiguredDirectory() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("CropAndLockTests-\(UUID().uuidString)", isDirectory: true)

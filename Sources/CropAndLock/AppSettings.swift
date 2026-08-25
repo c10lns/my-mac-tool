@@ -3,10 +3,8 @@ import Foundation
 enum AppSettings {
     static let appName = "CropAndLock"
     static let defaultHotKeyLabel = "command+control+a"
-    static let switcherHotKeyLabel = "double command"
+    static let switcherHotKeyLabel = "command+option"
     static let captureDirectoryName = "CropAndLock"
-    static let commandDoubleTapInterval: TimeInterval = 0.42
-    static let commandTapMaximumDuration: TimeInterval = 0.22
 }
 
 struct ScreenshotFileFactory {

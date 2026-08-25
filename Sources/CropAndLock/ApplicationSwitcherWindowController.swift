@@ -7,6 +7,7 @@ final class ApplicationSwitcherWindowController: NSWindowController {
 
     init(
         sectors: [[ApplicationSwitchItem]],
+        preferredSelectionBundleIdentifier: String? = nil,
         onSelect: @escaping (ApplicationSwitchItem) -> Void,
         onDismiss: @escaping () -> Void
     ) {
@@ -40,6 +41,7 @@ final class ApplicationSwitcherWindowController: NSWindowController {
             frame: screenFrame,
             sectors: sectors,
             preferredCenter: preferredCenter,
+            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier,
             onSelect: { [weak self] item in
                 self?.onSelect(item)
                 self?.dismiss()
@@ -70,6 +72,8 @@ final class ApplicationSwitcherWindowController: NSWindowController {
 }
 
 private final class ApplicationSwitcherOverlayWindow: NSPanel {
+    private var dismissDetector = ApplicationSwitcherDismissDetector(initialModifierFlags: NSEvent.modifierFlags)
+
     override var canBecomeKey: Bool {
         true
     }
@@ -79,17 +83,174 @@ private final class ApplicationSwitcherOverlayWindow: NSPanel {
     }
 
     override func keyDown(with event: NSEvent) {
-        (contentView as? ApplicationSwitcherOverlayView)?.dismiss()
+        guard let overlayView = contentView as? ApplicationSwitcherOverlayView else {
+            return
+        }
+
+        if overlayView.handleKeyDown(event) {
+            return
+        }
+
+        overlayView.dismiss()
     }
 
     override func flagsChanged(with event: NSEvent) {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
+        if dismissDetector.modifierFlagsChanged(to: event.modifierFlags) {
             (contentView as? ApplicationSwitcherOverlayView)?.dismiss()
         }
     }
 
     override func cancelOperation(_ sender: Any?) {
         (contentView as? ApplicationSwitcherOverlayView)?.dismiss()
+    }
+}
+
+struct ApplicationSwitcherDismissDetector {
+    private var suppressCommandDismissUntilCommandReleased: Bool
+    private var wasCommandDown: Bool
+
+    init(initialModifierFlags: NSEvent.ModifierFlags) {
+        let normalizedFlags = initialModifierFlags.intersection(.deviceIndependentFlagsMask)
+        let commandIsDown = normalizedFlags.contains(.command)
+
+        suppressCommandDismissUntilCommandReleased = commandIsDown
+        wasCommandDown = commandIsDown
+    }
+
+    mutating func modifierFlagsChanged(to flags: NSEvent.ModifierFlags) -> Bool {
+        let normalizedFlags = flags.intersection(.deviceIndependentFlagsMask)
+        let commandIsDown = normalizedFlags.contains(.command)
+        defer {
+            wasCommandDown = commandIsDown
+        }
+
+        if !commandIsDown {
+            suppressCommandDismissUntilCommandReleased = false
+            return false
+        }
+
+        if suppressCommandDismissUntilCommandReleased {
+            return false
+        }
+
+        return !wasCommandDown
+    }
+}
+
+enum ApplicationSwitcherNavigationDirection {
+    case up
+    case down
+    case left
+    case right
+
+    func containsCandidate(center candidate: NSPoint, relativeTo current: NSPoint) -> Bool {
+        switch self {
+        case .up:
+            return candidate.y > current.y
+        case .down:
+            return candidate.y < current.y
+        case .left:
+            return candidate.x < current.x
+        case .right:
+            return candidate.x > current.x
+        }
+    }
+}
+
+struct ApplicationSwitcherSelectionEntry {
+    let identifier: String
+    let displayName: String
+    let center: NSPoint
+    let lastActivationDate: Date?
+}
+
+struct ApplicationSwitcherSelectionModel {
+    private(set) var entries: [ApplicationSwitcherSelectionEntry]
+    private(set) var selectedIdentifier: String?
+
+    var selectedDisplayName: String? {
+        selectedEntry?.displayName
+    }
+
+    init(entries: [ApplicationSwitcherSelectionEntry], preferredIdentifier: String? = nil) {
+        self.entries = entries
+        selectedIdentifier = Self.defaultSelectedIdentifier(in: entries, preferredIdentifier: preferredIdentifier)
+    }
+
+    func updatingEntries(_ nextEntries: [ApplicationSwitcherSelectionEntry]) -> ApplicationSwitcherSelectionModel {
+        var model = ApplicationSwitcherSelectionModel(entries: nextEntries)
+        if let selectedIdentifier, nextEntries.contains(where: { $0.identifier == selectedIdentifier }) {
+            model.selectedIdentifier = selectedIdentifier
+        }
+        return model
+    }
+
+    mutating func select(identifier: String) {
+        guard entries.contains(where: { $0.identifier == identifier }) else {
+            return
+        }
+
+        selectedIdentifier = identifier
+    }
+
+    mutating func move(_ direction: ApplicationSwitcherNavigationDirection) {
+        guard
+            let currentIdentifier = selectedIdentifier,
+            let currentEntry = entries.first(where: { $0.identifier == currentIdentifier })
+        else {
+            selectedIdentifier = Self.defaultSelectedIdentifier(in: entries)
+            return
+        }
+
+        selectedIdentifier = entries
+            .filter { entry in
+                entry.identifier != currentIdentifier
+                    && direction.containsCandidate(center: entry.center, relativeTo: currentEntry.center)
+            }
+            .min { lhs, rhs in
+                distanceSquared(from: currentEntry.center, to: lhs.center)
+                    < distanceSquared(from: currentEntry.center, to: rhs.center)
+            }?
+            .identifier ?? currentIdentifier
+    }
+
+    private static func defaultSelectedIdentifier(
+        in entries: [ApplicationSwitcherSelectionEntry],
+        preferredIdentifier: String? = nil
+    ) -> String? {
+        if
+            let preferredIdentifier,
+            entries.contains(where: { $0.identifier == preferredIdentifier })
+        {
+            return preferredIdentifier
+        }
+
+        return entries.max { lhs, rhs in
+            switch (lhs.lastActivationDate, rhs.lastActivationDate) {
+            case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+                return lhsDate < rhsDate
+            case (nil, _?):
+                return true
+            case (_?, nil):
+                return false
+            default:
+                return false
+            }
+        }?.identifier
+    }
+
+    private func distanceSquared(from lhs: NSPoint, to rhs: NSPoint) -> CGFloat {
+        let deltaX = lhs.x - rhs.x
+        let deltaY = lhs.y - rhs.y
+        return deltaX * deltaX + deltaY * deltaY
+    }
+
+    private var selectedEntry: ApplicationSwitcherSelectionEntry? {
+        guard let selectedIdentifier else {
+            return nil
+        }
+
+        return entries.first { $0.identifier == selectedIdentifier }
     }
 }
 
@@ -104,12 +265,18 @@ private final class ApplicationSwitcherOverlayView: NSView {
         frame: NSRect,
         sectors: [[ApplicationSwitchItem]],
         preferredCenter: NSPoint,
+        preferredSelectionBundleIdentifier: String?,
         onSelect: @escaping (ApplicationSwitchItem) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         self.preferredCenter = preferredCenter
         self.onDismiss = onDismiss
-        radialView = RadialMenuView(frame: .zero, sectors: sectors, onSelect: onSelect)
+        radialView = RadialMenuView(
+            frame: .zero,
+            sectors: sectors,
+            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier,
+            onSelect: onSelect
+        )
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.08).cgColor
@@ -156,6 +323,32 @@ private final class ApplicationSwitcherOverlayView: NSView {
         _ = radialView.selectItem(at: radialPoint)
     }
 
+    func handleKeyDown(_ event: NSEvent) -> Bool {
+        switch event.specialKey {
+        case .leftArrow:
+            radialView.moveSelection(.left)
+            return true
+        case .rightArrow:
+            radialView.moveSelection(.right)
+            return true
+        case .upArrow:
+            radialView.moveSelection(.up)
+            return true
+        case .downArrow:
+            radialView.moveSelection(.down)
+            return true
+        default:
+            break
+        }
+
+        switch event.keyCode {
+        case 36, 76, 49:
+            return radialView.activateSelectedItem()
+        default:
+            return false
+        }
+    }
+
     func animateIn() {
         radialView.alphaValue = 0
         radialView.layer?.setAffineTransform(CGAffineTransform(scaleX: 0.72, y: 0.72))
@@ -175,11 +368,14 @@ private final class ApplicationSwitcherOverlayView: NSView {
 
 private final class RadialMenuView: NSView {
     private let sectors: [[ApplicationSwitchItem]]
+    private let preferredSelectionBundleIdentifier: String?
     private let onSelect: (ApplicationSwitchItem) -> Void
     private var appButtons: [RadialAppButton] = []
     private var buttonPlacements: [(button: RadialAppButton, sectorIndex: Int, appIndex: Int, appCount: Int)] = []
+    private var selectionModel: ApplicationSwitcherSelectionModel?
     private var trackingArea: NSTrackingArea?
     private weak var hoveredButton: RadialAppButton?
+    private let centerTitleLabel = NSTextField(labelWithString: "")
     private let colors: [NSColor] = [
         NSColor(calibratedRed: 0.06, green: 0.48, blue: 0.42, alpha: 0.78),
         NSColor(calibratedRed: 0.18, green: 0.45, blue: 0.85, alpha: 0.78),
@@ -191,8 +387,14 @@ private final class RadialMenuView: NSView {
         NSColor(calibratedRed: 0.51, green: 0.33, blue: 0.22, alpha: 0.78)
     ]
 
-    init(frame: NSRect, sectors: [[ApplicationSwitchItem]], onSelect: @escaping (ApplicationSwitchItem) -> Void) {
+    init(
+        frame: NSRect,
+        sectors: [[ApplicationSwitchItem]],
+        preferredSelectionBundleIdentifier: String?,
+        onSelect: @escaping (ApplicationSwitchItem) -> Void
+    ) {
         self.sectors = sectors
+        self.preferredSelectionBundleIdentifier = preferredSelectionBundleIdentifier
         self.onSelect = onSelect
         super.init(frame: frame)
         wantsLayer = true
@@ -201,6 +403,7 @@ private final class RadialMenuView: NSView {
         layer?.shadowRadius = 30
         layer?.shadowOffset = NSSize(width: 0, height: -10)
         buildAppButtons()
+        buildCenterTitleLabel()
     }
 
     @available(*, unavailable)
@@ -279,16 +482,35 @@ private final class RadialMenuView: NSView {
 
     override func layout() {
         super.layout()
+        layoutCenterTitleLabel()
         layoutAppButtons()
     }
 
     func selectItem(at point: NSPoint) -> Bool {
         for button in appButtons.reversed() where button.containsIconPoint(convert(point, to: button)) {
+            selectButton(button)
             button.selectItem()
             return true
         }
 
         return false
+    }
+
+    func moveSelection(_ direction: ApplicationSwitcherNavigationDirection) {
+        refreshSelectionModel()
+        selectionModel?.move(direction)
+        applySelectedState()
+    }
+
+    func activateSelectedItem() -> Bool {
+        refreshSelectionModel()
+
+        guard let selectedButton else {
+            return false
+        }
+
+        selectedButton.selectItem()
+        return true
     }
 
     private func updateHoveredButton(at point: NSPoint?) {
@@ -300,6 +522,7 @@ private final class RadialMenuView: NSView {
         hoveredButton?.setHoverState(false)
         nextButton?.setHoverState(true)
         hoveredButton = nextButton
+        updateCenterTitle()
     }
 
     private func button(at point: NSPoint) -> RadialAppButton? {
@@ -312,7 +535,7 @@ private final class RadialMenuView: NSView {
     }
 
     private func buildAppButtons() {
-        subviews.forEach { $0.removeFromSuperview() }
+        appButtons.forEach { $0.removeFromSuperview() }
         appButtons = []
         buttonPlacements = []
 
@@ -324,6 +547,35 @@ private final class RadialMenuView: NSView {
                 buttonPlacements.append((button, index, appIndex, apps.count))
             }
         }
+
+        bringCenterTitleLabelToFront()
+    }
+
+    private func buildCenterTitleLabel() {
+        let centeredCell = CenteredTextFieldCell(textCell: "")
+        centeredCell.alignment = .center
+        centeredCell.lineBreakMode = .byTruncatingTail
+        centerTitleLabel.cell = centeredCell
+        centerTitleLabel.isBezeled = false
+        centerTitleLabel.drawsBackground = false
+        centerTitleLabel.isEditable = false
+        centerTitleLabel.isSelectable = false
+        centerTitleLabel.alignment = .center
+        centerTitleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        centerTitleLabel.textColor = NSColor(calibratedWhite: 0.12, alpha: 1)
+        centerTitleLabel.lineBreakMode = .byTruncatingTail
+        centerTitleLabel.maximumNumberOfLines = 2
+        centerTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(centerTitleLabel, positioned: .above, relativeTo: nil)
+    }
+
+    private func layoutCenterTitleLabel() {
+        centerTitleLabel.frame = NSRect(
+            x: bounds.midX - 50,
+            y: bounds.midY - 23,
+            width: 100,
+            height: 46
+        )
     }
 
     private func layoutAppButtons() {
@@ -361,6 +613,54 @@ private final class RadialMenuView: NSView {
 
             placement.button.frame = frame
         }
+
+        refreshSelectionModel()
+        applySelectedState()
+    }
+
+    private func refreshSelectionModel() {
+        let entries = appButtons.map { $0.selectionEntry }
+        selectionModel = selectionModel?.updatingEntries(entries)
+            ?? ApplicationSwitcherSelectionModel(
+                entries: entries,
+                preferredIdentifier: preferredSelectionBundleIdentifier
+            )
+    }
+
+    private var selectedButton: RadialAppButton? {
+        guard let selectedIdentifier = selectionModel?.selectedIdentifier else {
+            return nil
+        }
+
+        return appButtons.first { $0.selectionIdentifier == selectedIdentifier }
+    }
+
+    private func selectButton(_ button: RadialAppButton) {
+        refreshSelectionModel()
+        selectionModel?.select(identifier: button.selectionIdentifier)
+        applySelectedState()
+    }
+
+    private func applySelectedState() {
+        let selectedIdentifier = selectionModel?.selectedIdentifier
+        for button in appButtons {
+            button.setSelectedState(button.selectionIdentifier == selectedIdentifier)
+        }
+        updateCenterTitle()
+    }
+
+    private func updateCenterTitle() {
+        centerTitleLabel.stringValue = hoveredButton?.displayName
+            ?? selectionModel?.selectedDisplayName
+            ?? ""
+    }
+
+    private func bringCenterTitleLabelToFront() {
+        guard centerTitleLabel.superview === self else {
+            return
+        }
+
+        addSubview(centerTitleLabel, positioned: .above, relativeTo: nil)
     }
 
     private func columnCount(for appCount: Int) -> Int {
@@ -386,6 +686,19 @@ private final class RadialMenuView: NSView {
         let countScale = appCount <= 4 ? 0.62 : 0.86
 
         return centeredColumn * usableAngle * countScale
+    }
+}
+
+private final class CenteredTextFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var drawingRect = super.drawingRect(forBounds: rect)
+        let textHeight = cellSize(forBounds: rect).height
+        let heightOffset = max(0, (drawingRect.height - textHeight) / 2)
+
+        drawingRect.origin.y += heightOffset
+        drawingRect.size.height -= heightOffset * 2
+
+        return drawingRect
     }
 }
 
@@ -427,11 +740,13 @@ private final class RadialAppGroupView: NSView {
 }
 
 private final class RadialAppButton: NSControl {
-    let preferredSize = NSSize(width: 112, height: 72)
+    let preferredSize = NSSize(width: 72, height: 72)
     private let item: ApplicationSwitchItem
     private let select: (ApplicationSwitchItem) -> Void
     private let iconBackgroundView = NSView()
     private let iconHitPadding: CGFloat = 4
+    private var isHovered = false
+    private var isSelected = false
 
     init(item: ApplicationSwitchItem, onSelect: @escaping (ApplicationSwitchItem) -> Void) {
         self.item = item
@@ -460,6 +775,23 @@ private final class RadialAppButton: NSControl {
         }
     }
 
+    var selectionIdentifier: String {
+        item.bundleIdentifier
+    }
+
+    var displayName: String {
+        item.name
+    }
+
+    var selectionEntry: ApplicationSwitcherSelectionEntry {
+        ApplicationSwitcherSelectionEntry(
+            identifier: selectionIdentifier,
+            displayName: item.name,
+            center: frame.center,
+            lastActivationDate: item.lastActivationDate
+        )
+    }
+
     private func buildContent() {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -473,22 +805,14 @@ private final class RadialAppButton: NSControl {
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
-        let titleLabel = NSTextField(labelWithString: item.name)
-        titleLabel.alignment = .center
-        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        titleLabel.textColor = .white
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
         iconBackgroundView.addSubview(iconView)
         addSubview(iconBackgroundView)
-        addSubview(titleLabel)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 112),
+            widthAnchor.constraint(equalToConstant: 72),
             heightAnchor.constraint(equalToConstant: 72),
 
-            iconBackgroundView.topAnchor.constraint(equalTo: topAnchor),
+            iconBackgroundView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconBackgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
             iconBackgroundView.widthAnchor.constraint(equalToConstant: 68),
             iconBackgroundView.heightAnchor.constraint(equalToConstant: 68),
@@ -496,17 +820,36 @@ private final class RadialAppButton: NSControl {
             iconView.centerXAnchor.constraint(equalTo: iconBackgroundView.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: iconBackgroundView.centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 58),
-            iconView.heightAnchor.constraint(equalToConstant: 58),
-
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            titleLabel.topAnchor.constraint(equalTo: iconBackgroundView.bottomAnchor, constant: 1)
+            iconView.heightAnchor.constraint(equalToConstant: 58)
         ])
     }
 
     func setHoverState(_ isHovered: Bool) {
-        let targetColor = NSColor.white.withAlphaComponent(isHovered ? 0.28 : 0).cgColor
-        guard isHovered else {
+        self.isHovered = isHovered
+        updateSelectionBackground(animated: isHovered)
+    }
+
+    func setSelectedState(_ isSelected: Bool) {
+        guard self.isSelected != isSelected else {
+            return
+        }
+
+        self.isSelected = isSelected
+        updateSelectionBackground(animated: true)
+    }
+
+    private func updateSelectionBackground(animated: Bool) {
+        let alpha: CGFloat
+        if isSelected {
+            alpha = 0.38
+        } else if isHovered {
+            alpha = 0.24
+        } else {
+            alpha = 0
+        }
+        let targetColor = NSColor.white.withAlphaComponent(alpha).cgColor
+
+        guard animated else {
             iconBackgroundView.layer?.backgroundColor = targetColor
             return
         }

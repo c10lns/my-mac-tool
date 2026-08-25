@@ -1,73 +1,36 @@
+import AppKit
 import XCTest
 @testable import CropAndLock
 
-final class CommandDoubleTapDetectorTests: XCTestCase {
-    func testDoubleCommandWithoutInterruptionTriggers() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
+final class CommandOptionChordDetectorTests: XCTestCase {
+    func testCommandThenOptionTriggersOnceWhenBothArePressed() {
+        var detector = CommandOptionChordDetector()
 
-        detector.commandKeyDown(at: 1.0)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.08))
-
-        detector.commandKeyDown(at: 1.2)
-        XCTAssertTrue(detector.commandKeyUp(at: 1.28))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.command]))
+        XCTAssertTrue(detector.modifierFlagsChanged(to: [.command, .option]))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.command, .option]))
     }
 
-    func testOtherKeyBetweenCommandPressesCancelsDoubleTap() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
+    func testOptionThenCommandTriggersOnceWhenBothArePressed() {
+        var detector = CommandOptionChordDetector()
 
-        detector.commandKeyDown(at: 1.0)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.08))
-
-        detector.interrupt()
-
-        detector.commandKeyDown(at: 1.2)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.28))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.option]))
+        XCTAssertTrue(detector.modifierFlagsChanged(to: [.command, .option]))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.command, .option]))
     }
 
-    func testMouseClickBetweenCommandPressesCancelsDoubleTap() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
+    func testReleasingARequiredModifierAllowsNextChordToTrigger() {
+        var detector = CommandOptionChordDetector()
 
-        detector.commandKeyDown(at: 1.0)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.08))
-
-        detector.interrupt()
-
-        detector.commandKeyDown(at: 1.2)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.28))
+        XCTAssertTrue(detector.modifierFlagsChanged(to: [.command, .option]))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.command]))
+        XCTAssertTrue(detector.modifierFlagsChanged(to: [.command, .option]))
     }
 
-    func testCommandPressAfterIntervalStartsNewSequence() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
+    func testSingleModifierDoesNotTrigger() {
+        var detector = CommandOptionChordDetector()
 
-        detector.commandKeyDown(at: 1.0)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.08))
-
-        detector.commandKeyDown(at: 1.8)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.88))
-    }
-
-    func testLongCommandHoldDoesNotCountAsTap() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
-
-        detector.commandKeyDown(at: 1.0)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.5))
-
-        detector.commandKeyDown(at: 1.6)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.68))
-    }
-
-    func testCommandShortcutDuringHoldCancelsPotentialTap() {
-        var detector = CommandDoubleTapDetector(interval: 0.42, maximumTapDuration: 0.2)
-
-        detector.commandKeyDown(at: 1.0)
-        detector.interrupt()
-        XCTAssertFalse(detector.commandKeyUp(at: 1.08))
-
-        detector.commandKeyDown(at: 1.2)
-        XCTAssertFalse(detector.commandKeyUp(at: 1.28))
-    }
-
-    func testCommandModifiedKeyDownShouldInterruptTapDetection() {
-        XCTAssertTrue(CommandDoubleTapInterruption.shouldInterruptKeyDown(cgFlags: [.maskCommand]))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.command]))
+        XCTAssertFalse(detector.modifierFlagsChanged(to: [.option]))
     }
 }

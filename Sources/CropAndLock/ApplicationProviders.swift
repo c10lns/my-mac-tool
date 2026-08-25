@@ -81,6 +81,12 @@ final class InstalledApplicationProvider {
 }
 
 final class RunningApplicationProvider {
+    private let iconCache: ApplicationIconCache
+
+    init(iconCache: ApplicationIconCache = ApplicationIconCache()) {
+        self.iconCache = iconCache
+    }
+
     func runningApplications() -> [ApplicationSwitchItem] {
         let currentBundleIdentifier = Bundle.main.bundleIdentifier
 
@@ -95,8 +101,8 @@ final class RunningApplicationProvider {
                     name: application.localizedName ?? application.bundleIdentifier ?? "Application",
                     bundleIdentifier: application.bundleIdentifier ?? "",
                     processIdentifier: application.processIdentifier,
-                    icon: application.icon,
-                    lastActivationDate: nil,
+                    icon: iconCache.icon(for: application),
+                    lastActivationDate: application.launchDate,
                     runningApplication: application
                 )
             }
@@ -123,6 +129,69 @@ final class RunningApplicationProvider {
                 name: application.localizedName ?? bundleIdentifier,
                 path: path
             )
+        }
+    }
+}
+
+final class ApplicationIconCache {
+    private var iconsByBundleIdentifier: [String: NSImage] = [:]
+
+    func icon(for application: NSRunningApplication) -> NSImage? {
+        icon(forBundleIdentifier: application.bundleIdentifier) {
+            application.icon
+        }
+    }
+
+    func icon(forBundleIdentifier bundleIdentifier: String?, load: () -> NSImage?) -> NSImage? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
+            return load()
+        }
+
+        if let cachedIcon = iconsByBundleIdentifier[bundleIdentifier] {
+            return cachedIcon
+        }
+
+        guard let icon = load() else {
+            return nil
+        }
+
+        iconsByBundleIdentifier[bundleIdentifier] = icon
+        return icon
+    }
+}
+
+final class ApplicationActivationHistory {
+    private let ownBundleIdentifier: String?
+    private var bundleIdentifiers: [String] = []
+
+    init(ownBundleIdentifier: String?) {
+        self.ownBundleIdentifier = ownBundleIdentifier
+    }
+
+    func record(bundleIdentifier: String?) {
+        guard
+            let bundleIdentifier,
+            !bundleIdentifier.isEmpty,
+            bundleIdentifier != ownBundleIdentifier
+        else {
+            return
+        }
+
+        bundleIdentifiers.removeAll { $0 == bundleIdentifier }
+        bundleIdentifiers.insert(bundleIdentifier, at: 0)
+    }
+
+    func record(application: NSRunningApplication?) {
+        record(bundleIdentifier: application?.bundleIdentifier)
+    }
+
+    func preferredSwitcherBundleIdentifier(
+        currentBundleIdentifier: String?,
+        availableBundleIdentifiers: Set<String>
+    ) -> String? {
+        bundleIdentifiers.first { bundleIdentifier in
+            bundleIdentifier != currentBundleIdentifier
+                && availableBundleIdentifiers.contains(bundleIdentifier)
         }
     }
 }

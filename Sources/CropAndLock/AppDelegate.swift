@@ -5,8 +5,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let installedApplicationProvider = InstalledApplicationProvider()
     private let runningApplicationProvider = RunningApplicationProvider()
     private let switcherConfigurationStore = SwitcherConfigurationStore()
+    private let activationHistory = ApplicationActivationHistory(ownBundleIdentifier: Bundle.main.bundleIdentifier)
     private var hotKeyController: HotKeyController?
-    private var commandDoubleTapMonitor: CommandDoubleTapMonitor?
+    private var commandOptionChordMonitor: CommandOptionChordMonitor?
     private var statusItem: NSStatusItem?
     private var pinnedWindows: [PinnedImageWindowController] = []
     private var switcherWindowController: ApplicationSwitcherWindowController?
@@ -16,7 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         configureStatusItem()
         configureHotKey()
-        configureCommandDoubleTapMonitor()
+        configureActivationHistory()
+        configureCommandOptionChordMonitor()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -102,17 +104,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func configureCommandDoubleTapMonitor() {
-        let monitor = CommandDoubleTapMonitor(
-            onCommandTap: { [weak self] in
-                self?.dismissApplicationSwitcher()
-            },
-            onDoubleTap: { [weak self] in
-                self?.showApplicationSwitcher()
-            }
-        )
+    private func configureCommandOptionChordMonitor() {
+        let monitor = CommandOptionChordMonitor { [weak self] in
+            self?.showApplicationSwitcher()
+        }
         monitor.start()
-        commandDoubleTapMonitor = monitor
+        commandOptionChordMonitor = monitor
+    }
+
+    private func configureActivationHistory() {
+        activationHistory.record(application: NSWorkspace.shared.frontmostApplication)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceApplicationDidActivate(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    @objc private func workspaceApplicationDidActivate(_ notification: Notification) {
+        let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        activationHistory.record(application: application)
     }
 
     private func showApplicationSwitcher() {
@@ -123,6 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let runningApplicationsByBundleIdentifier = runningApplicationProvider.runningApplicationsByBundleIdentifier()
         let runningApplications = Array(runningApplicationsByBundleIdentifier.values).sortedForSwitcher()
+        let preferredSelectionBundleIdentifier = activationHistory.preferredSwitcherBundleIdentifier(
+            currentBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            availableBundleIdentifiers: Set(runningApplicationsByBundleIdentifier.keys)
+        )
         guard !runningApplications.isEmpty else {
             showError(NSError(
                 domain: AppSettings.appName,
@@ -148,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let controller = ApplicationSwitcherWindowController(
             sectors: sectors,
+            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier,
             onSelect: { [weak self] item in
                 self?.activate(item)
             },
@@ -218,4 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
 }
