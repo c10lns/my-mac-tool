@@ -586,22 +586,29 @@ private final class RadialMenuView: NSView {
         let sectorCount = max(sectors.count, 1)
         let step = 360.0 / CGFloat(sectorCount)
 
+        // Single target center-to-center spacing that drives both the radial (row)
+        // and angular (column) placement, so icons read as an even grid instead of
+        // being cramped between columns while rows sit too far apart.
+        let iconSpacing = min(max(menuSize * 0.155, 78), 92)
+
         for placement in buttonPlacements {
             let columns = columnCount(for: placement.appCount)
             let rows = Int(ceil(Double(placement.appCount) / Double(columns)))
             let column = placement.appIndex % columns
             let row = placement.appIndex / columns
+
+            let rowCenter = CGFloat(rows - 1) / 2
+            let radiusOffset = (CGFloat(row) - rowCenter) * iconSpacing
+            let radius = min(max(baseRadius + radiusOffset, minimumRadius), maximumRadius)
+
             let angleOffset = angleOffset(
                 column: column,
                 columns: columns,
-                appCount: placement.appCount,
+                radius: radius,
+                iconSpacing: iconSpacing,
                 sectorStep: step
             )
 
-            let rowCenter = CGFloat(rows - 1) / 2
-            let radiusStep = min(menuSize * 0.105, 64)
-            let radiusOffset = (CGFloat(row) - rowCenter) * radiusStep
-            let radius = min(max(baseRadius + radiusOffset, minimumRadius), maximumRadius)
             let angle = (-90 + CGFloat(placement.sectorIndex) * step + angleOffset) * CGFloat.pi / 180
             let size = placement.button.preferredSize
             let frame = NSRect(
@@ -674,18 +681,25 @@ private final class RadialMenuView: NSView {
         }
     }
 
-    private func angleOffset(column: Int, columns: Int, appCount: Int, sectorStep: CGFloat) -> CGFloat {
-        guard columns > 1 else {
+    private func angleOffset(column: Int, columns: Int, radius: CGFloat, iconSpacing: CGFloat, sectorStep: CGFloat) -> CGFloat {
+        guard columns > 1, radius > 0 else {
             return 0
         }
 
+        // Convert the desired center-to-center arc distance between columns into an
+        // angle at this radius, so horizontal spacing matches the vertical spacing
+        // regardless of how far the row sits from the center.
+        let anglePerColumn = iconSpacing / radius * (180 / CGFloat.pi)
+
+        // Keep the whole span inside the sector, leaving a small padding on each side.
         let sectorPadding = min(max(sectorStep * 0.14, 8), 14)
         let usableAngle = max(0, sectorStep - sectorPadding * 2)
+        let totalSpan = min(anglePerColumn * CGFloat(columns - 1), usableAngle)
+
         let normalizedColumn = CGFloat(column) / CGFloat(columns - 1)
         let centeredColumn = normalizedColumn - 0.5
-        let countScale = appCount <= 4 ? 0.62 : 0.86
 
-        return centeredColumn * usableAngle * countScale
+        return centeredColumn * totalSpan
     }
 }
 
