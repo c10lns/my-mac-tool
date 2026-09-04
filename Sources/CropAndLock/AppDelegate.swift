@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var pinnedWindows: [PinnedImageWindowController] = []
     private var switcherWindowController: ApplicationSwitcherWindowController?
+    private var switcherContentSignature: ApplicationSwitcherContentSignature?
     private var settingsWindowController: ApplicationSettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -19,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureHotKey()
         configureActivationHistory()
         configureCommandOptionChordMonitor()
+
+        // Build the relatively expensive radial view after launch, before the user
+        // needs it. Subsequent invocations can reuse its layout and layer backing.
+        DispatchQueue.main.async { [weak self] in
+            self?.prepareApplicationSwitcher()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -128,17 +135,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showApplicationSwitcher() {
-        if switcherWindowController != nil {
+        if switcherWindowController?.window?.isVisible == true {
             switcherWindowController?.dismiss()
             return
         }
 
-        let runningApplicationsByBundleIdentifier = runningApplicationProvider.runningApplicationsByBundleIdentifier()
-        let runningApplications = Array(runningApplicationsByBundleIdentifier.values).sortedForSwitcher()
-        let preferredSelectionBundleIdentifier = activationHistory.preferredSwitcherBundleIdentifier(
-            currentBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-            availableBundleIdentifiers: Set(runningApplicationsByBundleIdentifier.keys)
-        )
+        let presentation = applicationSwitcherPresentation()
+        let runningApplications = presentation.runningApplications
+
         guard !runningApplications.isEmpty else {
             showError(NSError(
                 domain: AppSettings.appName,
@@ -148,12 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let sectors = switcherSectors(
-            runningApplications: runningApplications,
-            runningApplicationsByBundleIdentifier: runningApplicationsByBundleIdentifier
-        )
-
-        guard sectors.contains(where: { !$0.isEmpty }) else {
+        guard presentation.sectors.contains(where: { !$0.isEmpty }) else {
             showError(NSError(
                 domain: AppSettings.appName,
                 code: 3,
@@ -162,18 +161,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let controller = ApplicationSwitcherWindowController(
+        let controller = preparedSwitcherController(for: presentation)
+        controller.prepareForDisplay(
+            preferredSelectionBundleIdentifier: presentation.preferredSelectionBundleIdentifier
+        )
+        controller.showWindow(nil as Any?)
+    }
+
+    private func prepareApplicationSwitcher() {
+        let presentation = applicationSwitcherPresentation()
+        guard presentation.sectors.contains(where: { !$0.isEmpty }) else {
+            return
+        }
+
+        let controller = preparedSwitcherController(for: presentation)
+        controller.prepareForDisplay(
+            preferredSelectionBundleIdentifier: presentation.preferredSelectionBundleIdentifier
+        )
+        controller.prepareRendering()
+    }
+
+    private func applicationSwitcherPresentation() -> ApplicationSwitcherPresentation {
+        let runningApplicationsByBundleIdentifier = runningApplicationProvider.runningApplicationsByBundleIdentifier()
+        let runningApplications = Array(runningApplicationsByBundleIdentifier.values).sortedForSwitcher()
+        let preferredSelectionBundleIdentifier = activationHistory.preferredSwitcherBundleIdentifier(
+            currentBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            availableBundleIdentifiers: Set(runningApplicationsByBundleIdentifier.keys)
+        )
+        let sectors = switcherSectors(
+            runningApplications: runningApplications,
+            runningApplicationsByBundleIdentifier: runningApplicationsByBundleIdentifier
+        )
+
+        return ApplicationSwitcherPresentation(
+            runningApplications: runningApplications,
             sectors: sectors,
-            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier,
+            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier
+        )
+    }
+
+    private func preparedSwitcherController(
+        for presentation: ApplicationSwitcherPresentation
+    ) -> ApplicationSwitcherWindowController {
+        let signature = presentation.contentSignature
+        if let switcherWindowController, switcherContentSignature == signature {
+            return switcherWindowController
+        }
+
+        switcherWindowController?.close()
+        let controller = ApplicationSwitcherWindowController(
+            sectors: presentation.sectors,
+            preferredSelectionBundleIdentifier: presentation.preferredSelectionBundleIdentifier,
             onSelect: { [weak self] item in
                 self?.activate(item)
             },
-            onDismiss: { [weak self] in
-                self?.switcherWindowController = nil
-            }
+            onDismiss: {}
         )
         switcherWindowController = controller
-        controller.showWindow(nil as Any?)
+        switcherContentSignature = signature
+        return controller
     }
 
     private func dismissApplicationSwitcher() {
@@ -238,4 +284,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     deinit {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
+}
+
+private struct ApplicationSwitcherPresentation {
+    let runningApplications: [ApplicationSwitchItem]
+    let sectors: [[ApplicationSwitchItem]]
+    let preferredSelectionBundleIdentifier: String?
+
+    var contentSignature: ApplicationSwitcherContentSignature {
+        ApplicationSwitcherContentSignature(
+            sectors: sectors.map { sector in
+                sector.map { item in
+                    ApplicationSwitcherItemIdentity(
+                        bundleIdentifier: item.bundleIdentifier,
+                        processIdentifier: item.processIdentifier
+                    )
+                }
+            }
+        )
+    }
+}
+
+private struct ApplicationSwitcherContentSignature: Equatable {
+    let sectors: [[ApplicationSwitcherItemIdentity]]
+}
+
+private struct ApplicationSwitcherItemIdentity: Equatable {
+    let bundleIdentifier: String
+    let processIdentifier: pid_t
 }

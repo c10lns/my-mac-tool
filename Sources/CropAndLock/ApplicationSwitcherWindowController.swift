@@ -65,8 +65,34 @@ final class ApplicationSwitcherWindowController: NSWindowController {
         (window?.contentView as? ApplicationSwitcherOverlayView)?.animateIn()
     }
 
+    func prepareForDisplay(preferredSelectionBundleIdentifier: String?) {
+        let mouseLocation = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main
+        let screenFrame = targetScreen?.frame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let preferredCenter = NSPoint(
+            x: mouseLocation.x - screenFrame.minX,
+            y: mouseLocation.y - screenFrame.minY
+        )
+
+        window?.setFrame(screenFrame, display: false)
+        (window as? ApplicationSwitcherOverlayWindow)?.resetDismissDetector()
+        guard let overlayView = window?.contentView as? ApplicationSwitcherOverlayView else {
+            return
+        }
+
+        overlayView.prepareForDisplay(
+            preferredCenter: preferredCenter,
+            preferredSelectionBundleIdentifier: preferredSelectionBundleIdentifier
+        )
+    }
+
+    func prepareRendering() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        window?.contentView?.displayIfNeeded()
+    }
+
     func dismiss() {
-        close()
+        window?.orderOut(nil)
         onDismiss()
     }
 }
@@ -80,6 +106,10 @@ private final class ApplicationSwitcherOverlayWindow: NSPanel {
 
     override var canBecomeMain: Bool {
         false
+    }
+
+    func resetDismissDetector() {
+        dismissDetector = ApplicationSwitcherDismissDetector(initialModifierFlags: NSEvent.modifierFlags)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -256,7 +286,7 @@ struct ApplicationSwitcherSelectionModel {
 
 private final class ApplicationSwitcherOverlayView: NSView {
     private let radialView: RadialMenuView
-    private let preferredCenter: NSPoint
+    private var preferredCenter: NSPoint
     private let onDismiss: () -> Void
     private let preferredRadialSize: CGFloat = 560
     private let edgePadding: CGFloat = 20
@@ -279,7 +309,7 @@ private final class ApplicationSwitcherOverlayView: NSView {
         )
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.07).cgColor
         radialView.onExitDisk = { [weak self] in
             self?.dismiss()
         }
@@ -315,6 +345,18 @@ private final class ApplicationSwitcherOverlayView: NSView {
         )
     }
 
+    func prepareForDisplay(
+        preferredCenter: NSPoint,
+        preferredSelectionBundleIdentifier: String?
+    ) {
+        self.preferredCenter = preferredCenter
+        radialView.alphaValue = 1
+        radialView.layer?.setAffineTransform(.identity)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        radialView.resetSelection(preferredIdentifier: preferredSelectionBundleIdentifier)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard radialView.frame.contains(point) else {
@@ -329,15 +371,19 @@ private final class ApplicationSwitcherOverlayView: NSView {
     func handleKeyDown(_ event: NSEvent) -> Bool {
         switch event.specialKey {
         case .leftArrow:
+            radialView.exitInputMode()
             radialView.moveSelection(.left)
             return true
         case .rightArrow:
+            radialView.exitInputMode()
             radialView.moveSelection(.right)
             return true
         case .upArrow:
+            radialView.exitInputMode()
             radialView.moveSelection(.up)
             return true
         case .downArrow:
+            radialView.exitInputMode()
             radialView.moveSelection(.down)
             return true
         default:
@@ -345,19 +391,33 @@ private final class ApplicationSwitcherOverlayView: NSView {
         }
 
         switch event.keyCode {
+        case 51, 117:
+            return radialView.deleteLastSearchCharacter()
         case 36, 76, 49:
             return radialView.activateSelectedItem()
         default:
+            break
+        }
+
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+        guard event.modifierFlags.intersection(disallowedModifiers).isEmpty,
+              let characters = event.charactersIgnoringModifiers,
+              !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) })
+        else {
             return false
         }
+
+        radialView.appendSearchText(characters)
+        return true
     }
 
     func animateIn() {
         radialView.alphaValue = 0
-        radialView.layer?.setAffineTransform(CGAffineTransform(scaleX: 0.72, y: 0.72))
+        radialView.layer?.setAffineTransform(CGAffineTransform(scaleX: 0.92, y: 0.92))
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = 0.14
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             radialView.animator().alphaValue = 1
             radialView.layer?.setAffineTransform(.identity)
@@ -378,6 +438,7 @@ private final class RadialMenuView: NSView {
     private var selectionModel: ApplicationSwitcherSelectionModel?
     private var trackingArea: NSTrackingArea?
     private weak var hoveredButton: RadialAppButton?
+    private var searchQuery = ""
     var onExitDisk: (() -> Void)?
     private let centerTitleLabel = NSTextField(labelWithString: "")
     private let colors: [NSColor] = [
@@ -402,6 +463,9 @@ private final class RadialMenuView: NSView {
         self.onSelect = onSelect
         super.init(frame: frame)
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        layer?.shouldRasterize = true
+        layer?.rasterizationScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOpacity = 0.22
         layer?.shadowRadius = 30
@@ -441,6 +505,7 @@ private final class RadialMenuView: NSView {
             onExitDisk?()
             return
         }
+        exitInputMode()
         updateHoveredButton(at: point)
     }
 
@@ -597,6 +662,53 @@ private final class RadialMenuView: NSView {
         return true
     }
 
+    func appendSearchText(_ text: String) {
+        hoveredButton?.setHoverState(false)
+        hoveredButton = nil
+        searchQuery.append(text)
+        applySearchQuery()
+    }
+
+    func deleteLastSearchCharacter() -> Bool {
+        guard !searchQuery.isEmpty else {
+            return false
+        }
+
+        searchQuery.removeLast()
+        if searchQuery.isEmpty {
+            exitInputMode()
+        } else {
+            applySearchQuery()
+        }
+        return true
+    }
+
+    func exitInputMode() {
+        guard !searchQuery.isEmpty else {
+            return
+        }
+
+        searchQuery = ""
+        for button in appButtons {
+            button.setSearchMatch(nil, animated: false)
+        }
+        applySelectedState(animated: false)
+    }
+
+    func resetSelection(preferredIdentifier: String?) {
+        hoveredButton?.setHoverState(false)
+        hoveredButton = nil
+        searchQuery = ""
+        for button in appButtons {
+            button.setSearchMatch(nil, animated: false)
+        }
+        selectionModel = ApplicationSwitcherSelectionModel(
+            entries: appButtons.map { $0.selectionEntry },
+            preferredIdentifier: preferredIdentifier
+        )
+        applySelectedState(animated: false)
+    }
+
     private func updateHoveredButton(at point: NSPoint?) {
         let nextButton = point.flatMap { button(at: $0) }
         guard hoveredButton !== nextButton else {
@@ -717,7 +829,7 @@ private final class RadialMenuView: NSView {
         }
 
         refreshSelectionModel()
-        applySelectedState()
+        applySelectedState(animated: false)
     }
 
     private func refreshSelectionModel() {
@@ -743,19 +855,46 @@ private final class RadialMenuView: NSView {
         applySelectedState()
     }
 
-    private func applySelectedState() {
+    private func applySelectedState(animated: Bool = true) {
         let selectedIdentifier = selectionModel?.selectedIdentifier
         for button in appButtons {
-            button.setSelectedState(button.selectionIdentifier == selectedIdentifier)
+            button.setSelectedState(
+                button.selectionIdentifier == selectedIdentifier,
+                animated: animated
+            )
         }
         updateCenterTitle()
     }
 
     private func updateCenterTitle() {
+        if !searchQuery.isEmpty {
+            centerTitleLabel.stringValue = searchQuery
+            centerTitleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+            return
+        }
+
         let name = hoveredButton?.displayName
             ?? selectionModel?.selectedDisplayName
             ?? ""
+        centerTitleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         centerTitleLabel.stringValue = name.replacingOccurrences(of: " ", with: "\n")
+    }
+
+    private func applySearchQuery() {
+        let matches = appButtons.filter { $0.matches(searchQuery: searchQuery) }
+        let matchingIdentifiers = Set(matches.map(\.selectionIdentifier))
+
+        for button in appButtons {
+            button.setSearchMatch(
+                matchingIdentifiers.contains(button.selectionIdentifier),
+                animated: true
+            )
+        }
+        updateCenterTitle()
+
+        if matches.count == 1 {
+            matches[0].selectItem()
+        }
     }
 
     private func bringCenterTitleLabelToFront() {
@@ -850,17 +989,20 @@ private final class RadialAppGroupView: NSView {
 }
 
 private final class RadialAppButton: NSControl {
-    let preferredSize = NSSize(width: 72, height: 72)
+    let preferredSize = NSSize(width: 76, height: 76)
     private let item: ApplicationSwitchItem
     private let select: (ApplicationSwitchItem) -> Void
     private let iconBackgroundView = NSView()
+    private let iconView: NSImageView
     private let iconHitPadding: CGFloat = 4
     private var isHovered = false
     private var isSelected = false
+    private var isSearchMatch: Bool?
 
     init(item: ApplicationSwitchItem, onSelect: @escaping (ApplicationSwitchItem) -> Void) {
         self.item = item
         select = onSelect
+        iconView = NSImageView(image: item.icon ?? NSImage())
         super.init(frame: .zero)
         buildContent()
     }
@@ -893,6 +1035,10 @@ private final class RadialAppButton: NSControl {
         item.name
     }
 
+    func matches(searchQuery: String) -> Bool {
+        item.matches(searchQuery: searchQuery)
+    }
+
     var selectionEntry: ApplicationSwitcherSelectionEntry {
         ApplicationSwitcherSelectionEntry(
             identifier: selectionIdentifier,
@@ -903,35 +1049,22 @@ private final class RadialAppButton: NSControl {
     }
 
     private func buildContent() {
-        translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
 
         iconBackgroundView.wantsLayer = true
-        iconBackgroundView.layer?.cornerRadius = 34
+        iconBackgroundView.layer?.cornerRadius = 38
         iconBackgroundView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0).cgColor
-        iconBackgroundView.translatesAutoresizingMaskIntoConstraints = false
 
-        let iconView = NSImageView(image: item.icon ?? NSImage())
         iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.translatesAutoresizingMaskIntoConstraints = false
 
         iconBackgroundView.addSubview(iconView)
         addSubview(iconBackgroundView)
+    }
 
-        NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 72),
-            heightAnchor.constraint(equalToConstant: 72),
-
-            iconBackgroundView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconBackgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            iconBackgroundView.widthAnchor.constraint(equalToConstant: 68),
-            iconBackgroundView.heightAnchor.constraint(equalToConstant: 68),
-
-            iconView.centerXAnchor.constraint(equalTo: iconBackgroundView.centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: iconBackgroundView.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 58),
-            iconView.heightAnchor.constraint(equalToConstant: 58)
-        ])
+    override func layout() {
+        super.layout()
+        iconBackgroundView.frame = bounds
+        iconView.frame = NSRect(x: 7, y: 7, width: 62, height: 62)
     }
 
     func setHoverState(_ isHovered: Bool) {
@@ -939,25 +1072,52 @@ private final class RadialAppButton: NSControl {
         updateSelectionBackground(animated: isHovered)
     }
 
-    func setSelectedState(_ isSelected: Bool) {
+    func setSelectedState(_ isSelected: Bool, animated: Bool = true) {
         guard self.isSelected != isSelected else {
             return
         }
 
         self.isSelected = isSelected
-        updateSelectionBackground(animated: true)
+        updateSelectionBackground(animated: animated)
+    }
+
+    func setSearchMatch(_ isMatch: Bool?, animated: Bool) {
+        guard isSearchMatch != isMatch else {
+            return
+        }
+
+        isSearchMatch = isMatch
+        updateSelectionBackground(animated: animated)
     }
 
     private func updateSelectionBackground(animated: Bool) {
-        let alpha: CGFloat
-        if isSelected {
-            alpha = 0.32
+        let targetColor: CGColor
+        let isHighlighted: Bool
+        if let isSearchMatch {
+            isHighlighted = isSearchMatch
+            targetColor = isSearchMatch
+                ? NSColor.white.withAlphaComponent(0.84).cgColor
+                : NSColor.clear.cgColor
+            alphaValue = isSearchMatch ? 1 : 0.32
+        } else if isSelected {
+            isHighlighted = true
+            targetColor = NSColor.white.withAlphaComponent(0.76).cgColor
+            alphaValue = 1
         } else if isHovered {
-            alpha = 0.20
+            isHighlighted = false
+            targetColor = NSColor.white.withAlphaComponent(0.42).cgColor
+            alphaValue = 1
         } else {
-            alpha = 0
+            isHighlighted = false
+            targetColor = NSColor.clear.cgColor
+            alphaValue = 1
         }
-        let targetColor = NSColor.white.withAlphaComponent(alpha).cgColor
+        iconBackgroundView.layer?.borderColor = NSColor.white.withAlphaComponent(isHighlighted ? 0.92 : 0).cgColor
+        iconBackgroundView.layer?.borderWidth = isHighlighted ? 1.5 : 0
+        iconBackgroundView.layer?.shadowColor = NSColor.black.cgColor
+        iconBackgroundView.layer?.shadowOpacity = isHighlighted ? 0.16 : 0
+        iconBackgroundView.layer?.shadowRadius = isHighlighted ? 9 : 0
+        iconBackgroundView.layer?.shadowOffset = .zero
 
         guard animated else {
             iconBackgroundView.layer?.backgroundColor = targetColor

@@ -82,6 +82,7 @@ final class InstalledApplicationProvider {
 
 final class RunningApplicationProvider {
     private let iconCache: ApplicationIconCache
+    private var searchNamesByBundleIdentifier: [String: [String]] = [:]
 
     init(iconCache: ApplicationIconCache = ApplicationIconCache()) {
         self.iconCache = iconCache
@@ -97,8 +98,10 @@ final class RunningApplicationProvider {
                     && application.bundleIdentifier != currentBundleIdentifier
             }
             .map { application in
-                ApplicationSwitchItem(
-                    name: application.localizedName ?? application.bundleIdentifier ?? "Application",
+                let name = application.localizedName ?? application.bundleIdentifier ?? "Application"
+                return ApplicationSwitchItem(
+                    name: name,
+                    searchNames: searchNames(for: application, fallbackName: name),
                     bundleIdentifier: application.bundleIdentifier ?? "",
                     processIdentifier: application.processIdentifier,
                     icon: iconCache.icon(for: application),
@@ -107,6 +110,48 @@ final class RunningApplicationProvider {
                 )
             }
             .sortedForSwitcher()
+    }
+
+    private func searchNames(for application: NSRunningApplication, fallbackName: String) -> [String] {
+        guard let bundleIdentifier = application.bundleIdentifier else {
+            return [fallbackName]
+        }
+        if let cachedNames = searchNamesByBundleIdentifier[bundleIdentifier] {
+            return cachedNames
+        }
+
+        var names = [fallbackName]
+        if let bundleURL = application.bundleURL, let bundle = Bundle(url: bundleURL) {
+            appendName(bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String, to: &names)
+            appendName(bundle.localizedInfoDictionary?["CFBundleName"] as? String, to: &names)
+            appendName(bundle.infoDictionary?["CFBundleDisplayName"] as? String, to: &names)
+            appendName(bundle.infoDictionary?["CFBundleName"] as? String, to: &names)
+
+            let englishLocalization = bundle.localizations.first { localization in
+                localization == "en" || localization.hasPrefix("en-") || localization.hasPrefix("en_")
+            }
+            if let englishLocalization,
+               let path = bundle.path(
+                   forResource: "InfoPlist",
+                   ofType: "strings",
+                   inDirectory: nil,
+                   forLocalization: englishLocalization
+               ),
+               let dictionary = NSDictionary(contentsOfFile: path) as? [String: Any] {
+                appendName(dictionary["CFBundleDisplayName"] as? String, to: &names)
+                appendName(dictionary["CFBundleName"] as? String, to: &names)
+            }
+        }
+
+        searchNamesByBundleIdentifier[bundleIdentifier] = names
+        return names
+    }
+
+    private func appendName(_ name: String?, to names: inout [String]) {
+        guard let name, !name.isEmpty, !names.contains(name) else {
+            return
+        }
+        names.append(name)
     }
 
     func runningApplicationsByBundleIdentifier() -> [String: ApplicationSwitchItem] {

@@ -9,6 +9,7 @@ struct ApplicationDescriptor: Codable, Equatable, Hashable {
 
 struct ApplicationSwitchItem {
     let name: String
+    let searchNames: [String]
     let bundleIdentifier: String
     let processIdentifier: pid_t
     let icon: NSImage?
@@ -17,6 +18,7 @@ struct ApplicationSwitchItem {
 
     init(
         name: String,
+        searchNames: [String] = [],
         bundleIdentifier: String,
         processIdentifier: pid_t,
         icon: NSImage?,
@@ -24,11 +26,50 @@ struct ApplicationSwitchItem {
         runningApplication: NSRunningApplication? = nil
     ) {
         self.name = name
+        self.searchNames = searchNames.isEmpty ? [name] : searchNames
         self.bundleIdentifier = bundleIdentifier
         self.processIdentifier = processIdentifier
         self.icon = icon
         self.lastActivationDate = lastActivationDate
         self.runningApplication = runningApplication
+    }
+
+    func matches(searchQuery: String) -> Bool {
+        ApplicationNameMatcher.matches(
+            query: searchQuery,
+            names: searchNames + [name]
+        )
+    }
+}
+
+enum ApplicationNameMatcher {
+    static func matches(query: String, names: [String]) -> Bool {
+        let normalizedQuery = compact(query)
+        guard !normalizedQuery.isEmpty else {
+            return false
+        }
+
+        return names.contains { name in
+            searchKeys(for: name).contains { $0.contains(normalizedQuery) }
+        }
+    }
+
+    private static func searchKeys(for value: String) -> [String] {
+        let latin = value.applyingTransform(.toLatin, reverse: false) ?? value
+        let foldedLatin = latin.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+        let words = foldedLatin.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        let initials = words.compactMap(\.first).map(String.init).joined()
+
+        return [compact(value), compact(foldedLatin), compact(initials)]
+            .filter { !$0.isEmpty }
+    }
+
+    private static func compact(_ value: String) -> String {
+        let folded = value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        return String(folded.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }).lowercased()
     }
 }
 
